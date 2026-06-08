@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MDH · Presupuesto ER v1</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=Faustina:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #F1F4ED; }
+    .btn { transition: all .15s ease; cursor: pointer; border: none; outline: none; font-family: inherit; }
+    .btn:hover { transform: translateY(-1px); }
+    @keyframes fade { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+    .fade { animation: fade .4s ease both; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useRef } = React;
+const { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, Legend } = Recharts;
+
+/* ── Paleta institucional — Manual de Marca Gobierno de Entre Ríos ──────── */
+const GREEN  = "#5A7A28";
+const LIME   = "#9DC462";
+const GREEN2 = "#84A44B";
+const SLATE  = "#485A64";
+const INK    = "#3C3C3C";
+const CREAM  = "#F0F0E6";
+const RED    = "#C0392B";
+const ORANGE = "#D35400";
+const HEAD   = "'Archivo', sans-serif";
+const BODY   = "'Faustina', serif";
+const NUM    = { fontVariantNumeric: "tabular-nums" };
+const COLORS = ["#5A7A28","#84A44B","#9DC462","#485A64","#2E6B8B","#8B6C28","#1A6E8E","#6B3A28","#A44B4B","#4B8B6C"];
+const MONTHS = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+
+/* ── Raíces con sub-programas ────────────────────────────────────────────── */
+const RAICES = [
+  {
+    key: "alimentacion",
+    label: "Políticas de alimentación",
+    color: "#5A7A28",
+    subprogramas: ["Riesgo Social", "Comedores"],
+  },
+  {
+    key: "cuidado",
+    label: "Políticas de cuidado",
+    color: "#485A64",
+    subprogramas: ["En-Vejez-ER", "Contigo 2025/2026", "La juventud en el centro", "La juventud en la comunidad", "La juventud emprende", "Fortalecimiento de Gobiernos Locales"],
+  },
+  {
+    key: "emprendedurismo",
+    label: "Emprendedurismo",
+    color: "#84A44B",
+    subprogramas: ["Microcrédito", "Fortalecer (2025)", "Transformando Comunidades", "Poder Popular"],
+  },
+  {
+    key: "funcionamiento",
+    label: "Gastos de Funcionamiento",
+    color: "#2E6B8B",
+    subprogramas: ["Aporte Casa de E. Ríos", "Productos Alimenticios", "Textiles y Vestuario", "Servicios Básicos", "Servicios Técnicos y Profesionales"],
+  },
+  {
+    key: "aportes",
+    label: "Aportes no reintegrables",
+    color: "#9DC462",
+    subprogramas: ["Subsidios a personas humanas", "Aportes Directos", "Ley 4035"],
+  },
+];
+
+/* ── Formatters ─────────────────────────────────────────────────────────── */
+const arsFull = new Intl.NumberFormat("es-AR", { style:"currency", currency:"ARS", maximumFractionDigits:0 });
+const fmtARS  = v => arsFull.format(v);
+const fmtMill = v => "$" + new Intl.NumberFormat("es-AR", { maximumFractionDigits:0 }).format(Math.round(v/1e6)) + " M";
+
+/* ── Utilidades de parseo ────────────────────────────────────────────────── */
+function slugify(s) {
+  return s.toLowerCase()
+    .replace(/á/g,"a").replace(/é/g,"e").replace(/í/g,"i")
+    .replace(/ó/g,"o").replace(/ú/g,"u").replace(/ñ/g,"n")
+    .replace(/[^a-z0-9]/g,"_").replace(/_+/g,"_").replace(/^_|_$/g,"");
+}
+
+var MES_NORM = {
+  "enero":0,"febrero":1,"marzo":2,"abril":3,"mayo":4,"junio":5,
+  "julio":6,"agosto":7,"septiembre":8,"octubre":9,"noviembre":10,"diciembre":11,
+  "mar":2,"abr":3,"may":4,"jun":5,"jul":6,"ago":7,"sep":8,"oct":9,"nov":10,"dic":11
+};
+
+function normMes(h) {
+  if (!h) return -1;
+  var tok = String(h).trim().toLowerCase()
+    .replace(/[^a-záéíóú]/g,"").replace(/á/g,"a").replace(/é/g,"e")
+    .replace(/í/g,"i").replace(/ó/g,"o").replace(/ú/g,"u");
+  return MES_NORM[tok] != null ? MES_NORM[tok] : -1;
+}
+
+/* Parsea valores numéricos del Excel: números, null, "-", "$80.000.000,00", "205.000.000,00" */
+function parsearValor(v) {
+  if (v === null || v === undefined || v === "-") return 0;
+  if (typeof v === "number") return v < 0 ? 0 : v;
+  var s = String(v).trim().replace(/\$/g,"").replace(/\s/g,"");
+  if (/\d/.test(s)) {
+    // formato argentino: 1.000.000,00 → quitar puntos de miles, coma→punto decimal
+    s = s.replace(/\./g,"").replace(/,/g,".");
+    var n = parseFloat(s);
+    return isNaN(n) || n < 0 ? 0 : n;
+  }
+  return 0;
+}
+
+/* Mapa dimensión Excel → clave de raíz */
+var DIMMAP = {
+  "emprendedurismo":          "emprendedurismo",
+  "políticas de cuidado":     "cuidado",
+  "politicas de cuidado":     "cuidado",
+  "aportes no reintegrables": "aportes",
+  "políticas alimentarias":   "alimentacion",
+  "politicas alimentarias":   "alimentacion",
+  "gastos de funcionamiento": "funcionamiento",
+};
+
+/* ── Parser global: un solo Excel → datos de todas las raíces ───────────── */
+function parseExcelGlobal(buf, fileName) {
+  var wb = XLSX.read(buf, {type:"array"});
+  // Buscar hoja con "program" en el nombre, sino la primera
+  var shName = wb.SheetNames.find(function(n){ return n.toLowerCase().includes("program"); })
+             || wb.SheetNames[0];
+  var ws = wb.Sheets[shName];
+  var rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  if (!rows.length) return null;
+
+  // Fila 0: encabezado — columnas 0=Dimensión, 1=Programa, 2-13=meses
+  var header = rows[0];
+  var colMes = {}; // índice de columna → nombre mes normalizado
+  header.forEach(function(h, i) {
+    if (i < 2) return;
+    var idx = normMes(h);
+    if (idx >= 0) colMes[i] = MONTHS[idx];
+  });
+
+  // Agrupar datos: dimKey → progNombre → mesNombre → valor acumulado
+  var byDim = {};
+  rows.slice(1).forEach(function(row) {
+    if (!row[0] || !row[1]) return;
+    var dimRaw = String(row[0]).trim();
+    var dimKey = DIMMAP[dimRaw.toLowerCase()
+      .replace(/á/g,"a").replace(/é/g,"e").replace(/í/g,"i").replace(/ó/g,"o").replace(/ú/g,"u")];
+    if (!dimKey) return;
+    var prog = String(row[1]).trim();
+    if (!prog) return;
+
+    if (!byDim[dimKey]) byDim[dimKey] = {};
+    if (!byDim[dimKey][prog]) byDim[dimKey][prog] = {};
+
+    Object.keys(colMes).forEach(function(ci) {
+      var v = parsearValor(row[ci]);
+      if (v > 0) {
+        var mes = colMes[ci];
+        byDim[dimKey][prog][mes] = (byDim[dimKey][prog][mes] || 0) + v;
+      }
+    });
+  });
+
+  if (!Object.keys(byDim).length) return null;
+
+  var results = {};
+  Object.keys(byDim).forEach(function(dimKey) {
+    var progs = byDim[dimKey];
+    // Filtrar programas sin ningún dato mensual
+    var progNames = Object.keys(progs).filter(function(p){
+      return Object.keys(progs[p]).length > 0;
+    });
+    if (!progNames.length) return;
+
+    var cats = progNames.map(function(l, i){
+      return {key: slugify(l), label: l, color: COLORS[i % COLORS.length]};
+    });
+
+    // Eje de meses: unión de todos los meses presentes
+    var mesSet = {};
+    progNames.forEach(function(p){
+      Object.keys(progs[p]).forEach(function(m){ mesSet[m] = MONTHS.indexOf(m); });
+    });
+    var mesesOrd = MONTHS.filter(function(m){ return mesSet[m] !== undefined; });
+
+    var data = mesesOrd.map(function(mes) {
+      var row = {mes: mes, nro_mes: MONTHS.indexOf(mes)+1};
+      cats.forEach(function(c, i){
+        row[c.key] = progs[progNames[i]][mes] || 0;
+      });
+      return row;
+    });
+
+    var presupuestoTotal = progNames.reduce(function(s, p){
+      return s + Object.keys(progs[p]).reduce(function(ss, m){ return ss + progs[p][m]; }, 0);
+    }, 0);
+
+    results[dimKey] = {
+      data: data,
+      cats: cats,
+      presupuestoTotal: presupuestoTotal,
+      kpiCards: {},
+      fileName: fileName || shName,
+    };
+  });
+
+  return Object.keys(results).length > 0 ? results : null;
+}
+
+/* ── Iconos ──────────────────────────────────────────────────────────────── */
+const IAlert  = ({s=16,c="currentColor"}) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>;
+const IUpload = ({s=15,c="currentColor"}) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>;
+const ICheck  = ({s=11,c="currentColor"}) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>;
+const IArrow  = ({s=16,c="currentColor"}) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>;
+const IBack   = ({s=16,c="currentColor"}) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>;
+
+/* ── Merge de todas las raíces para la vista general ───────────────────── */
+function buildDataGeneral(datos, raices) {
+  var mesSet = {};
+  raices.forEach(function(raiz) {
+    var d = datos[raiz.key];
+    if (!d) return;
+    d.data.forEach(function(row) { mesSet[row.mes] = row.nro_mes; });
+  });
+  var mesesOrd = Object.keys(mesSet).sort(function(a,b){ return mesSet[a]-mesSet[b]; });
+
+  var dataRows = mesesOrd.map(function(mes) {
+    var row = { mes: mes, nro_mes: mesSet[mes], __total: 0 };
+    raices.forEach(function(raiz) {
+      var d = datos[raiz.key];
+      if (!d) { row[raiz.key] = 0; return; }
+      var mesRow = d.data.find(function(r){ return r.mes === mes; });
+      var suma = mesRow
+        ? d.cats.reduce(function(s,c){ return s+(mesRow[c.key]||0); }, 0)
+        : 0;
+      row[raiz.key] = suma;
+      row.__total += suma;
+    });
+    return row;
+  });
+  return dataRows;
+}
+
+/* ── App ─────────────────────────────────────────────────────────────────── */
+function App() {
+  const [datos, setDatos]           = useState({});
+  const [vista, setVista]           = useState("base");
+  const [raizActiva, setRaizActiva] = useState(null);
+  const [showTotalGeneral, setShowTotalGeneral] = useState(true);
+  const [activeGeneral, setActiveGeneral]       = useState({});
+  const [presupMinisterio, setPresupMinisterio] = useState(5500000000);
+  const [active, setActive]       = useState({});
+  const [showTotal, setShowTotal] = useState(true);
+  const [errorCarga, setErrorCarga] = useState(null);
+  const globalFileRef = useRef(null);
+
+  const archivoCargado = Object.keys(datos).length > 0;
+
+  const areaData   = raizActiva ? datos[raizActiva] : null;
+  const cats       = areaData ? areaData.cats : [];
+  const rawData    = areaData ? areaData.data : [];
+  const kpiCards   = areaData ? (areaData.kpiCards || {}) : {};
+  const presuKey   = Object.keys(kpiCards).find(k => k.toLowerCase().includes("presupuesto"));
+  const presuTotal = presuKey ? kpiCards[presuKey] : (areaData ? areaData.presupuestoTotal : 0);
+  const cuotaMensual = presupMinisterio;
+
+  const activeKeys = cats.filter(c => active[c.key]).map(c => c.key);
+  const data = useMemo(() =>
+    rawData.map(r => ({...r, __total: activeKeys.reduce((s,k)=>s+(r[k]||0),0)}))
+  , [rawData, activeKeys.join(",")]);
+
+  const raicesCargadas = RAICES.filter(r => !!datos[r.key]);
+  const raicesActivasGeneral = raicesCargadas.filter(r => activeGeneral[r.key] !== false);
+  const dataGeneral = useMemo(() => buildDataGeneral(datos, raicesActivasGeneral), [datos, raicesActivasGeneral.map(r=>r.key).join(",")]);
+  const toggleGeneral = k => setActiveGeneral(p => ({...p, [k]: p[k]===false ? true : false}));
+  const ejecutadoGeneral = dataGeneral.reduce((s,d)=>s+d.__total,0);
+  const mesesSobreCuotaGeneral = dataGeneral.filter(d=>d.__total>presupMinisterio).length;
+
+  const ejecutado = data.reduce((s,d)=>s+d.__total,0);
+  const mesesSobreCuota = data.filter(d=>d.__total>cuotaMensual&&cuotaMensual>0).length;
+  const alertasSobre = data.filter(d=>d.__total>cuotaMensual&&cuotaMensual>0);
+
+  const periodo = data.length
+    ? (data[0].mes===data[data.length-1].mes ? data[0].mes : data[0].mes+" a "+data[data.length-1].mes)
+    : "";
+
+  /* ── Carga global: un Excel → todas las raíces ───────────────────────── */
+  const cargarArchivoGlobal = (file) => {
+    if (!file) return;
+    setErrorCarga(null);
+    const reader = new FileReader();
+    reader.onload = evt => {
+      try {
+        const results = parseExcelGlobal(evt.target.result, file.name);
+        if (!results) { setErrorCarga("No se encontraron datos válidos en el archivo."); return; }
+        setDatos(results);
+        const ag = {}; Object.keys(results).forEach(k => { ag[k] = true; }); setActiveGeneral(ag);
+      } catch(e) { setErrorCarga("Error al leer el archivo: "+e.message); }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const abrirDetalle = key => {
+    setRaizActiva(key);
+    const d = datos[key];
+    if (d) { const a={}; d.cats.forEach(c=>{a[c.key]=true;}); setActive(a); }
+    setShowTotal(true);
+    setVista("detalle");
+  };
+
+  const toggle = k => setActive(p => ({...p, [k]:!p[k]}));
+
+  /* ── Tooltip detalle ─────────────────────────────────────────────────── */
+  const Tip = ({active:a, payload, label}) => {
+    if (!a||!payload||!payload.length) return null;
+    const row = payload[0].payload;
+    const over = cuotaMensual>0 && row.__total>cuotaMensual;
+    return (
+      <div style={{background:"#fff", border:`1px solid ${GREEN}22`, borderRadius:12, padding:"12px 14px",
+          boxShadow:"0 12px 30px rgba(21,98,59,.18)", fontFamily:BODY, minWidth:230}}>
+        <div style={{fontFamily:HEAD, fontWeight:700, color:GREEN, fontSize:13, marginBottom:8}}>{label} 2026</div>
+        {cats.filter(c=>active[c.key]).map(c=>(
+          <div key={c.key} style={{display:"flex", justifyContent:"space-between", gap:18, fontSize:12.5, padding:"2px 0"}}>
+            <span style={{display:"flex", alignItems:"center", gap:7, color:INK}}>
+              <span style={{width:9, height:9, borderRadius:2, background:c.color, flexShrink:0}} />{c.label}
+            </span>
+            <span style={{...NUM, color:INK}}>{fmtARS(row[c.key]||0)}</span>
+          </div>
+        ))}
+        <div style={{borderTop:`1px solid ${INK}1a`, marginTop:7, paddingTop:7,
+            display:"flex", justifyContent:"space-between", fontSize:13}}>
+          <strong style={{color:over?RED:GREEN}}>Total área</strong>
+          <strong style={{...NUM, color:over?RED:GREEN}}>{fmtARS(row.__total)}</strong>
+        </div>
+        {over && <div style={{marginTop:5, fontSize:11, color:RED, display:"flex", alignItems:"center", gap:5}}>
+          <IAlert s={12} c={RED}/> Supera la cuota mensual</div>}
+      </div>
+    );
+  };
+
+  const raizInfo = RAICES.find(r=>r.key===raizActiva);
+
+  /* ── HEADER COMPARTIDO ───────────────────────────────────────────────── */
+  const Header = () => (
+    <div style={{background:"#fff", boxShadow:"0 1px 3px rgba(0,0,0,.08)"}}>
+      <div style={{background:GREEN, padding:"5px 28px", display:"flex",
+          alignItems:"center", justifyContent:"space-between"}}>
+        <div style={{display:"flex", alignItems:"center", gap:10}}>
+          <div style={{fontFamily:HEAD, fontSize:14, fontWeight:800, color:LIME,
+              letterSpacing:"-.01em", border:`2px solid ${LIME}`, padding:"1px 5px",
+              borderRadius:3, lineHeight:1.2}}>
+            ER
+          </div>
+          <div style={{fontFamily:HEAD, fontSize:10, fontWeight:700, color:"rgba(255,255,255,.92)",
+              letterSpacing:".14em", textTransform:"uppercase"}}>
+            Gobierno de Entre Ríos
+          </div>
+        </div>
+        <div style={{fontFamily:HEAD, fontSize:9.5, color:"rgba(255,255,255,.6)",
+            letterSpacing:".08em", textTransform:"uppercase"}}>
+          Ministerio de Desarrollo Humano
+        </div>
+      </div>
+      <div style={{padding:"13px 28px", display:"flex", alignItems:"center",
+          gap:14, flexWrap:"wrap"}}>
+        {(vista==="detalle"||vista==="general") && (
+          <button className="btn" onClick={()=>setVista("base")}
+            style={{display:"inline-flex", alignItems:"center", gap:6, padding:"6px 14px",
+              borderRadius:20, border:`1.5px solid ${GREEN}30`, background:"#fff",
+              color:GREEN, fontSize:12.5, fontWeight:600, fontFamily:BODY}}>
+            <IBack s={13} c={GREEN}/> Volver
+          </button>
+        )}
+        <div style={{flex:1}}>
+          <h1 style={{fontFamily:HEAD, fontSize:vista==="base"?21:19, fontWeight:800, color:GREEN,
+              margin:0, lineHeight:1.15, letterSpacing:"-.01em"}}>
+            {vista==="base" ? "Ejecución presupuestaria mensual"
+              : vista==="general" ? "Comparativo general · todas las áreas"
+              : (raizInfo ? raizInfo.label : "")}
+          </h1>
+          {vista==="detalle" && periodo && (
+            <div style={{fontFamily:BODY, fontSize:12.5, color:SLATE, marginTop:2}}>
+              Ejercicio 2026 · {periodo}
+            </div>
+          )}
+          {vista==="general" && (
+            <div style={{fontFamily:BODY, fontSize:12.5, color:SLATE, marginTop:2}}>
+              {raicesCargadas.length} {raicesCargadas.length===1?"área cargada":"áreas cargadas"} · Ejercicio 2026
+            </div>
+          )}
+        </div>
+        {vista==="detalle" && areaData && (
+          <div style={{fontFamily:BODY, fontSize:11.5, background:`${GREEN}12`,
+              color:GREEN, padding:"4px 12px", borderRadius:20, fontWeight:600}}>
+            {areaData.fileName}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  /* ── VISTA BASE ──────────────────────────────────────────────────────── */
+  if (vista === "base") return (
+    <div style={{background:CREAM, minHeight:"100vh", fontFamily:BODY, color:INK}}>
+      <Header />
+      {/* Hero */}
+      <div className="fade" style={{background:GREEN, padding:"36px 40px 32px",
+          display:"flex", justifyContent:"space-between", alignItems:"flex-end",
+          flexWrap:"wrap", gap:24}}>
+        <div>
+          <div style={{fontFamily:HEAD, fontSize:10.5, letterSpacing:".22em",
+              textTransform:"uppercase", color:LIME, fontWeight:700, marginBottom:10}}>
+            Monitoreo presupuestario · ejercicio 2026
+          </div>
+          <h2 style={{fontFamily:HEAD, fontSize:40, fontWeight:800, color:"#fff",
+              margin:"0 0 10px", lineHeight:1.0, letterSpacing:"-.02em"}}>
+            Ejecución<br/>presupuestaria
+          </h2>
+          <div style={{fontFamily:BODY, fontSize:14, color:"rgba(255,255,255,.65)", lineHeight:1.5}}>
+            Ministerio de Desarrollo Humano<br/>Gobierno de Entre Ríos
+          </div>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <div style={{fontFamily:HEAD, fontSize:10.5, letterSpacing:".15em",
+              textTransform:"uppercase", color:LIME, fontWeight:700, marginBottom:6}}>
+            Cuota · ejercicio 2026
+          </div>
+          <div style={{fontFamily:HEAD, fontSize:46, fontWeight:800, color:"#fff",
+              ...NUM, letterSpacing:"-.03em", lineHeight:1}}>
+            {fmtARS(presupMinisterio)}
+          </div>
+          <div style={{marginTop:10, display:"flex", alignItems:"center",
+              gap:8, justifyContent:"flex-end"}}>
+            <span style={{fontFamily:BODY, fontSize:11.5, color:"rgba(255,255,255,.5)"}}>Editar:</span>
+            <input type="number" value={presupMinisterio} min="0" step="100000000"
+              onChange={e=>{const v=parseFloat(e.target.value);if(!isNaN(v)&&v>=0)setPresupMinisterio(v);}}
+              style={{padding:"6px 12px", borderRadius:8, border:"1.5px solid rgba(255,255,255,.25)",
+                background:"rgba(255,255,255,.1)", fontSize:13, fontFamily:BODY,
+                color:"#fff", width:180, ...NUM, outline:"none"}} />
+          </div>
+        </div>
+      </div>
+
+      <div style={{padding:"24px 28px 40px"}}>
+
+        {/* ── Card de carga global ─────────────────────────────────────── */}
+        <div className="fade" style={{marginBottom:20, background:"#fff", borderRadius:16,
+            border:`2px solid ${archivoCargado ? GREEN+"50" : GREEN+"20"}`,
+            overflow:"hidden",
+            boxShadow: archivoCargado ? `0 0 0 2.5px ${GREEN}25` : "none"}}>
+          <div style={{height:6, background:`linear-gradient(90deg,${RAICES.map(r=>r.color).join(",")})`}} />
+          <div style={{padding:"22px 26px", display:"flex", alignItems:"center",
+              justifyContent:"space-between", flexWrap:"wrap", gap:16}}>
+            <div style={{flex:1, minWidth:240}}>
+              <div style={{fontFamily:HEAD, fontSize:17, fontWeight:800, color:GREEN, marginBottom:5}}>
+                Proyección Financiera de Programas
+              </div>
+              <div style={{fontSize:13, color:INK, opacity:.65, lineHeight:1.5}}>
+                {archivoCargado
+                  ? `${raicesCargadas.length} de ${RAICES.length} áreas cargadas · ${Object.values(datos)[0]?.fileName || ""}`
+                  : "Cargá el Excel global que alimenta todas las áreas del ministerio en un solo paso."}
+              </div>
+              {errorCarga && (
+                <div style={{marginTop:10, display:"flex", alignItems:"center", gap:7,
+                    fontSize:12.5, color:RED, background:"#fdf2f2", padding:"8px 12px",
+                    borderRadius:8, border:`1px solid ${RED}30`}}>
+                  <IAlert s={14} c={RED}/> {errorCarga}
+                </div>
+              )}
+            </div>
+            <div style={{display:"flex", gap:10, alignItems:"center", flexShrink:0}}>
+              {archivoCargado && (
+                <div style={{fontSize:12, fontWeight:600, color:GREEN, background:`${GREEN}12`,
+                    padding:"6px 14px", borderRadius:20, display:"inline-flex", alignItems:"center", gap:7}}>
+                  <ICheck s={11} c={GREEN}/> {raicesCargadas.length} áreas listas
+                </div>
+              )}
+              <button className="btn"
+                onClick={() => globalFileRef.current && globalFileRef.current.click()}
+                style={{display:"inline-flex", alignItems:"center", gap:8, padding:"11px 22px",
+                  borderRadius:12, border:"none", background:GREEN, color:"#fff",
+                  fontSize:14, fontWeight:700, fontFamily:BODY}}>
+                <IUpload s={15} c="#fff"/>
+                {archivoCargado ? "Reemplazar Excel" : "Cargar Excel"}
+              </button>
+            </div>
+            <input type="file" accept=".xlsx,.xls" style={{display:"none"}} ref={globalFileRef}
+              onChange={e => { cargarArchivoGlobal(e.target.files[0]); e.target.value=""; }} />
+          </div>
+        </div>
+
+        {/* ── Grid de raíces ───────────────────────────────────────────── */}
+        <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))", gap:16}}>
+          {RAICES.map(raiz => {
+            const d = datos[raiz.key];
+            const loaded = !!d;
+            const progList = loaded ? d.cats : null;
+            return (
+              <div key={raiz.key} className="fade"
+                style={{background:"#fff", borderRadius:16, border:`1px solid ${GREEN}15`,
+                  overflow:"hidden",
+                  boxShadow: loaded ? `0 0 0 2px ${raiz.color}30` : "none"}}>
+                <div style={{height:5, background:raiz.color}} />
+                <div style={{padding:"20px 22px 18px"}}>
+                  <div style={{fontFamily:HEAD, fontSize:16, fontWeight:800, color:GREEN, marginBottom:12}}>
+                    {raiz.label}
+                  </div>
+                  {/* Listado de programas: reales si cargados, estáticos si no */}
+                  <div style={{marginBottom:14}}>
+                    {(progList || raiz.subprogramas).slice(0,6).map((sp,i) => (
+                      <div key={i} style={{display:"flex", alignItems:"center", gap:8,
+                          fontSize:12.5, fontFamily:BODY, color:SLATE, padding:"3px 0"}}>
+                        <span style={{width:5, height:5, borderRadius:"50%", background:raiz.color, flexShrink:0}} />
+                        {typeof sp === "string" ? sp : sp.label}
+                      </div>
+                    ))}
+                    {progList && progList.length > 6 && (
+                      <div style={{fontSize:11.5, color:SLATE, opacity:.55, paddingTop:3, fontStyle:"italic"}}>
+                        + {progList.length - 6} programas más
+                      </div>
+                    )}
+                  </div>
+                  {/* Estado */}
+                  <div style={{marginBottom: loaded ? 14 : 0}}>
+                    {loaded ? (
+                      <div style={{display:"inline-flex", alignItems:"center", gap:6, fontSize:11.5,
+                          background:`${raiz.color}12`, color:raiz.color,
+                          padding:"4px 10px", borderRadius:20, fontWeight:600}}>
+                        <ICheck s={11} c={raiz.color}/> {d.cats.length} programas · datos cargados
+                      </div>
+                    ) : (
+                      <div style={{fontSize:11.5, color:INK, opacity:.38, fontStyle:"italic"}}>
+                        Sin datos — cargá el Excel global
+                      </div>
+                    )}
+                  </div>
+                  {/* Acción */}
+                  {loaded && (
+                    <button className="btn" onClick={() => abrirDetalle(raiz.key)}
+                      style={{width:"100%", display:"inline-flex", alignItems:"center",
+                        justifyContent:"center", gap:7, padding:"9px 14px", borderRadius:10,
+                        border:"none", background:GREEN, color:"#fff",
+                        fontSize:13, fontWeight:700, fontFamily:BODY}}>
+                      Ver análisis <IArrow s={13} c="#fff"/>
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* ── Card General ─────────────────────────────────────────────── */}
+        <div className="fade" style={{marginTop:16, background:"#fff", borderRadius:16,
+            border:`2px solid ${GREEN}25`, overflow:"hidden",
+            boxShadow: raicesCargadas.length>0 ? `0 0 0 2px ${GREEN}20` : "none"}}>
+          <div style={{height:5, background:`linear-gradient(90deg,${RAICES.map(r=>r.color).join(",")})`}} />
+          <div style={{padding:"20px 24px", display:"flex", alignItems:"center",
+              justifyContent:"space-between", flexWrap:"wrap", gap:16}}>
+            <div>
+              <div style={{fontFamily:HEAD, fontSize:18, fontWeight:800, color:INK, marginBottom:6}}>
+                General — Comparativo del ministerio
+              </div>
+              <div style={{fontSize:13, color:INK, opacity:.6, marginBottom:10}}>
+                Todas las áreas en un solo gráfico para comparar ejecución y ver el total del ministerio.
+              </div>
+              <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
+                {RAICES.map(r=>(
+                  <span key={r.key} style={{fontSize:11.5, display:"inline-flex", alignItems:"center", gap:5,
+                      padding:"3px 9px", borderRadius:12,
+                      background: datos[r.key] ? `${r.color}15` : "#0000000a",
+                      color: datos[r.key] ? r.color : "#00000040", fontWeight:600}}>
+                    <span style={{width:6,height:6,borderRadius:"50%",background:datos[r.key]?r.color:"#00000030"}}/>
+                    {r.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <button className="btn" onClick={()=>setVista("general")}
+              disabled={raicesCargadas.length===0}
+              style={{display:"inline-flex", alignItems:"center", gap:8, padding:"11px 22px",
+                borderRadius:12, border:"none",
+                background: raicesCargadas.length>0 ? GREEN : "#00000020",
+                color: raicesCargadas.length>0 ? "#fff" : "#00000050",
+                fontSize:14, fontWeight:700,
+                cursor: raicesCargadas.length>0 ? "pointer" : "default"}}>
+              Ver comparativo general <IArrow s={15} c={raicesCargadas.length>0?"#fff":"#00000050"}/>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div style={{padding:"0 28px 20px", fontFamily:BODY, fontSize:11, color:SLATE,
+          opacity:.5, textAlign:"right"}}>
+        Herramienta desarrollada por equipo de Planificación ER
+      </div>
+    </div>
+  );
+
+  /* ── TOOLTIP GENERAL ─────────────────────────────────────────────────── */
+  const TipGeneral = ({active:a, payload, label}) => {
+    if (!a||!payload||!payload.length) return null;
+    const row = payload[0].payload;
+    const over = row.__total > presupMinisterio;
+    return (
+      <div style={{background:"#fff", border:`1px solid ${GREEN}22`, borderRadius:12, padding:"12px 14px",
+          boxShadow:"0 12px 30px rgba(21,98,59,.18)", fontFamily:BODY, minWidth:240}}>
+        <div style={{fontFamily:HEAD, fontWeight:700, color:GREEN, fontSize:13, marginBottom:8}}>{label} 2026</div>
+        {raicesActivasGeneral.map(r=>(
+          <div key={r.key} style={{display:"flex", justifyContent:"space-between", gap:18, fontSize:12.5, padding:"2px 0"}}>
+            <span style={{display:"flex", alignItems:"center", gap:7, color:INK}}>
+              <span style={{width:9,height:9,borderRadius:2,background:r.color,flexShrink:0}}/>{r.label}
+            </span>
+            <span style={{...NUM, color:INK}}>{fmtARS(row[r.key]||0)}</span>
+          </div>
+        ))}
+        <div style={{borderTop:`1px solid ${INK}1a`, marginTop:7, paddingTop:7,
+            display:"flex", justifyContent:"space-between", fontSize:13}}>
+          <strong style={{color:over?RED:GREEN}}>Total ministerio</strong>
+          <strong style={{...NUM, color:over?RED:GREEN}}>{fmtARS(row.__total)}</strong>
+        </div>
+        {over && <div style={{marginTop:5,fontSize:11,color:RED,display:"flex",alignItems:"center",gap:5}}>
+          <IAlert s={12} c={RED}/> Supera el presupuesto ministerial</div>}
+      </div>
+    );
+  };
+
+  /* ── VISTA GENERAL ───────────────────────────────────────────────────── */
+  if (vista === "general") return (
+    <div style={{background:CREAM, minHeight:"100vh", fontFamily:BODY, color:INK}}>
+      <Header/>
+      <div style={{padding:"24px 28px 36px"}}>
+        <div className="fade" style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:14, marginBottom:20}}>
+          {[
+            { label:"Presupuesto total del ministerio", value:fmtARS(presupMinisterio), color:GREEN },
+            { label:"Proyección total 2026 (todas las áreas)",
+              value: fmtARS(ejecutadoGeneral),
+              sub: presupMinisterio > 0 ? (ejecutadoGeneral/presupMinisterio*100).toFixed(1)+"% del presupuesto ministerial" : null,
+              color: ejecutadoGeneral > presupMinisterio ? RED : GREEN },
+            { label:"Meses sobre el presupuesto", value:mesesSobreCuotaGeneral+" de "+(dataGeneral.length||"—"), color:mesesSobreCuotaGeneral>0?RED:GREEN },
+          ].map((k,i)=>(
+            <div key={i} style={{background:"#fff", border:`1px solid ${GREEN}1f`, borderRadius:14, padding:"14px 16px"}}>
+              <div style={{fontSize:11.5, color:INK, opacity:.65, marginBottom:6}}>{k.label}</div>
+              <div style={{...NUM, fontFamily:HEAD, fontSize:19, fontWeight:700, color:k.color}}>{k.value}</div>
+              {k.sub && <div style={{fontSize:11, color:INK, opacity:.45, marginTop:4}}>{k.sub}</div>}
+            </div>
+          ))}
+        </div>
+        <div style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:14}}>
+          <span style={{fontFamily:HEAD, fontSize:11, textTransform:"uppercase", letterSpacing:".12em", color:GREEN, fontWeight:700, marginRight:2}}>Áreas</span>
+          {raicesCargadas.map(r => {
+            const on = activeGeneral[r.key] !== false;
+            return (
+              <button key={r.key} className="btn" onClick={() => toggleGeneral(r.key)}
+                style={{display:"inline-flex", alignItems:"center", gap:7, padding:"6px 12px",
+                  borderRadius:20, border:`1.5px solid ${on ? r.color : "#00000018"}`,
+                  background: on ? r.color : "#fff", color: on ? "#fff" : INK,
+                  fontSize:12, fontWeight:600}}>
+                <span style={{width:14, height:14, borderRadius:4,
+                    background: on ? "#ffffff33" : r.color,
+                    display:"inline-flex", alignItems:"center", justifyContent:"center"}}>
+                  {on && <ICheck s={10} c="#fff"/>}
+                </span>
+                {r.label}
+              </button>
+            );
+          })}
+          <span style={{width:1, height:22, background:"#00000015", margin:"0 2px"}}/>
+          <button className="btn" onClick={()=>setShowTotalGeneral(p=>!p)}
+            style={{display:"inline-flex", alignItems:"center", gap:7, padding:"6px 12px",
+              borderRadius:20, border:`1.5px solid ${showTotalGeneral?INK:"#00000018"}`,
+              background:showTotalGeneral?INK:"#fff", color:showTotalGeneral?"#fff":INK, fontSize:12, fontWeight:600}}>
+            <span style={{width:14,height:14,borderRadius:4,background:showTotalGeneral?"#ffffff33":INK,
+                display:"inline-flex",alignItems:"center",justifyContent:"center"}}>
+              {showTotalGeneral&&<ICheck s={10} c="#fff"/>}
+            </span>
+            Total ministerio
+          </button>
+        </div>
+        {dataGeneral.length===0 ? (
+          <div style={{background:"#fff",borderRadius:16,padding:"60px 20px",textAlign:"center",color:INK,opacity:.4,fontFamily:HEAD,fontSize:16}}>
+            Cargá datos en al menos un área para ver el comparativo
+          </div>
+        ) : (
+          <div className="fade" style={{background:"#fff", border:`1px solid ${GREEN}1f`, borderRadius:16, padding:"18px 14px 8px"}}>
+            <ResponsiveContainer width="100%" height={440}>
+              <LineChart data={dataGeneral} margin={{top:16,right:28,left:14,bottom:4}}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#0000000d" vertical={false}/>
+                <XAxis dataKey="mes" tick={{fontSize:12,fill:INK,fontFamily:BODY}} tickLine={false} axisLine={{stroke:"#00000022"}}/>
+                <YAxis tickFormatter={fmtMill} tick={{fontSize:11,fill:INK,fontFamily:BODY}} tickLine={false} axisLine={false} width={84} domain={[0,"auto"]}/>
+                <Tooltip content={<TipGeneral/>} cursor={{stroke:GREEN,strokeWidth:1,strokeDasharray:"4 4"}}/>
+                <ReferenceLine y={presupMinisterio} stroke={RED} strokeWidth={1.5} strokeDasharray="7 5"
+                  label={{value:"Presupuesto · "+fmtMill(presupMinisterio), position:"insideTopRight", fill:RED, fontSize:11, fontWeight:700, fontFamily:HEAD}}/>
+                {raicesActivasGeneral.map(r=>(
+                  <Line key={r.key} type="monotone" dataKey={r.key} name={r.label}
+                    stroke={r.color} strokeWidth={2.2}
+                    dot={{r:3,fill:r.color,strokeWidth:0}} activeDot={{r:5}} isAnimationActive/>
+                ))}
+                {showTotalGeneral&&(
+                  <Line type="monotone" dataKey="__total" name="Total ministerio"
+                    stroke={INK} strokeWidth={3}
+                    dot={({cx,cy,payload})=>{
+                      if(cx==null||cy==null) return null;
+                      const over=payload.__total>presupMinisterio;
+                      return <circle cx={cx} cy={cy} r={over?6:4} fill={over?RED:INK} stroke="#fff" strokeWidth={2}/>;
+                    }}
+                    activeDot={{r:7}} isAnimationActive/>
+                )}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+        {raicesCargadas.length>0&&(
+          <div className="fade" style={{marginTop:16, background:"#fff", borderRadius:14, border:`1px solid ${GREEN}1f`, overflow:"hidden"}}>
+            <div style={{padding:"14px 20px", borderBottom:`1px solid ${INK}0a`, fontFamily:HEAD, fontWeight:700, fontSize:13, color:INK}}>
+              Resumen por área
+            </div>
+            {raicesCargadas.map((r,i)=>{
+              const on = activeGeneral[r.key] !== false;
+              const d=datos[r.key];
+              const total=d?d.data.reduce((s,row)=>s+d.cats.reduce((cs,c)=>cs+(row[c.key]||0),0),0):0;
+              const pct=ejecutadoGeneral>0?(total/ejecutadoGeneral*100):0;
+              return(
+                <div key={r.key} onClick={()=>abrirDetalle(r.key)}
+                  style={{padding:"12px 20px",display:"flex",alignItems:"center",gap:12,
+                    borderBottom:i<raicesCargadas.length-1?`1px solid ${INK}08`:"none",
+                    cursor:"pointer",transition:"background .12s",
+                    opacity: on ? 1 : 0.4}}
+                  onMouseEnter={e=>e.currentTarget.style.background=`${r.color}08`}
+                  onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                  <span style={{width:12,height:12,borderRadius:3,background:r.color,flexShrink:0}}/>
+                  <span style={{flex:1,fontSize:13,fontWeight:600,color:INK}}>{r.label}</span>
+                  <div style={{width:120,height:6,borderRadius:3,background:"#0000000a",overflow:"hidden"}}>
+                    <div style={{width:pct+"%",height:"100%",background:r.color,borderRadius:3}}/>
+                  </div>
+                  <span style={{...NUM,fontSize:13,color:INK,width:130,textAlign:"right"}}>{fmtARS(total)}</span>
+                  <span style={{fontSize:11.5,color:r.color,fontWeight:700,width:45,textAlign:"right"}}>{pct.toFixed(1)}%</span>
+                  <IArrow s={13} c={`${INK}40`}/>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <div style={{padding:"0 28px 20px", fontSize:10.5, color:INK, opacity:.35, textAlign:"right"}}>
+        Herramienta desarrollada por equipo de Planificación ER
+      </div>
+    </div>
+  );
+
+  /* ── VISTA DETALLE ───────────────────────────────────────────────────── */
+  return (
+    <div style={{background:CREAM, minHeight:"100vh", fontFamily:BODY, color:INK}}>
+      <Header />
+      <div style={{padding:"24px 28px 36px"}}>
+
+        {/* KPIs */}
+        <div className="fade" style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:14, marginBottom:20}}>
+          {[
+            { label:"Cuota · ejercicio 2026", value: fmtARS(presupMinisterio), color:GREEN },
+            { label:"Proyección total 2026",
+              value: fmtARS(ejecutado),
+              sub: presuTotal > 0 ? (ejecutado > presuTotal ? "⚠ supera presupuesto área" : (ejecutado/presuTotal*100).toFixed(1)+"% del presupuesto área") : null,
+              color: presuTotal > 0 && ejecutado > presuTotal ? RED : GREEN },
+            { label:"Meses sobre la cuota",
+              value: cuotaMensual>0 ? mesesSobreCuota+" de "+data.length : "—",
+              sub:   cuotaMensual>0 ? "Cuota: "+fmtMill(cuotaMensual)+"/mes" : "Sin cuota configurada",
+              color: mesesSobreCuota>0 ? RED : GREEN },
+          ].map((k,i)=>(
+            <div key={i} style={{background:"#fff", border:`1px solid ${GREEN}1f`, borderRadius:14, padding:"14px 16px"}}>
+              <div style={{fontSize:11.5, color:INK, opacity:.65, marginBottom:6}}>{k.label}</div>
+              <div style={{...NUM, fontFamily:HEAD, fontSize:19, fontWeight:700, color:k.color}}>{k.value}</div>
+              {k.sub && <div style={{fontSize:11, color:INK, opacity:.45, marginTop:4}}>{k.sub}</div>}
+            </div>
+          ))}
+        </div>
+
+        {/* Toggles */}
+        <div style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:14}}>
+          <span style={{fontFamily:HEAD, fontSize:11, textTransform:"uppercase",
+              letterSpacing:".12em", color:GREEN, fontWeight:700, marginRight:2}}>Programas</span>
+          {cats.map(c => {
+            const on = active[c.key];
+            return (
+              <button key={c.key} className="btn" onClick={()=>toggle(c.key)}
+                style={{display:"inline-flex", alignItems:"center", gap:7, padding:"6px 12px",
+                  borderRadius:20, border:`1.5px solid ${on?c.color:"#00000018"}`,
+                  background:on?c.color:"#fff", color:on?"#fff":INK, fontSize:12, fontWeight:600}}>
+                <span style={{width:14, height:14, borderRadius:4,
+                    background:on?"#ffffff33":c.color,
+                    display:"inline-flex", alignItems:"center", justifyContent:"center"}}>
+                  {on && <ICheck s={10} c="#fff"/>}
+                </span>
+                {c.label}
+              </button>
+            );
+          })}
+          <span style={{width:1, height:22, background:"#00000015", margin:"0 2px"}} />
+          <button className="btn" onClick={()=>setShowTotal(p=>!p)}
+            style={{display:"inline-flex", alignItems:"center", gap:7, padding:"6px 12px",
+              borderRadius:20, border:`1.5px solid ${showTotal?INK:"#00000018"}`,
+              background:showTotal?INK:"#fff", color:showTotal?"#fff":INK, fontSize:12, fontWeight:600}}>
+            <span style={{width:14, height:14, borderRadius:4,
+                background:showTotal?"#ffffff33":INK,
+                display:"inline-flex", alignItems:"center", justifyContent:"center"}}>
+              {showTotal && <ICheck s={10} c="#fff"/>}
+            </span>
+            Total área
+          </button>
+        </div>
+
+        {/* Gráfico */}
+        <div className="fade" style={{background:"#fff", border:`1px solid ${GREEN}1f`,
+            borderRadius:16, padding:"18px 14px 8px"}}>
+          <ResponsiveContainer width="100%" height={400}>
+            <LineChart data={data} margin={{top:16, right:28, left:14, bottom:4}}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#0000000d" vertical={false}/>
+              <XAxis dataKey="mes" tick={{fontSize:12, fill:INK, fontFamily:BODY}} tickLine={false} axisLine={{stroke:"#00000022"}}/>
+              <YAxis tickFormatter={fmtMill} tick={{fontSize:11, fill:INK, fontFamily:BODY}} tickLine={false} axisLine={false} width={78} domain={[0,"auto"]}/>
+              <Tooltip content={<Tip/>} cursor={{stroke:GREEN, strokeWidth:1, strokeDasharray:"4 4"}}/>
+              {cuotaMensual>0 && (
+                <ReferenceLine y={cuotaMensual} stroke={RED} strokeWidth={1.5} strokeDasharray="7 5"
+                  label={{value:"Cuota · "+fmtMill(cuotaMensual), position:"insideTopRight",
+                    fill:RED, fontSize:11, fontWeight:700, fontFamily:HEAD}}/>
+              )}
+              {cats.filter(c=>active[c.key]).map(c=>(
+                <Line key={c.key} type="monotone" dataKey={c.key} name={c.label}
+                  stroke={c.color} strokeWidth={2.2}
+                  dot={{r:3, fill:c.color, strokeWidth:0}} activeDot={{r:5}} isAnimationActive/>
+              ))}
+              {showTotal && (
+                <Line type="monotone" dataKey="__total" name="Total área"
+                  stroke={INK} strokeWidth={3}
+                  dot={({cx,cy,payload})=>{
+                    if(cx==null||cy==null) return null;
+                    const over=cuotaMensual>0&&payload.__total>cuotaMensual;
+                    return <circle cx={cx} cy={cy} r={over?6:4} fill={over?RED:INK} stroke="#fff" strokeWidth={2}/>;
+                  }}
+                  activeDot={{r:7}} isAnimationActive/>
+              )}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Alerta */}
+        {mesesSobreCuota>0 && cuotaMensual>0 && (
+          <div className="fade" style={{marginTop:14, display:"flex", alignItems:"flex-start", gap:11,
+              background:"#fff", borderLeft:`4px solid ${RED}`, border:`1px solid ${RED}33`,
+              borderRadius:12, padding:"13px 16px"}}>
+            <IAlert s={20} c={RED}/>
+            <div style={{fontSize:13, lineHeight:1.55}}>
+              <strong style={{color:RED}}>{mesesSobreCuota} {mesesSobreCuota===1?"mes supera":"meses superan"} la cuota mensual. </strong>
+              <span style={{color:INK, opacity:.85}}>
+                {alertasSobre.map(d=>d.mes).join(", ")} exceden la cuota de {fmtMill(cuotaMensual)}/mes.
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+      <div style={{padding:"0 28px 20px", fontSize:10.5, color:INK, opacity:.35, textAlign:"right"}}>
+        Herramienta desarrollada por equipo de Planificación ER
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
