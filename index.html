@@ -1115,10 +1115,11 @@ function App() {
           </div>
         )}
         {/* ── KPIs segundo semestre ────────────────────────────────────── */}
-        <div className="fade kpi-grid-2">
+        <div className="fade kpi-grid-3">
           {[
-            { label:"Total gasto previsto · Julio–Diciembre",   value: fmtARS(47419570376), icon:"📅", color:SLATE,  bg:"#F5F8FF", border:"#485A6430" },
-            { label:"Cuota financiera acumulada · 2° semestre", value: fmtARS(33000000000), icon:"💰", color:GREEN2, bg:`${GREEN2}0d`, border:`${GREEN2}35` },
+            { label:"Total gasto previsto · Julio–Diciembre",   value: fmtARS(47419570376), icon:"📊", color:SLATE,  bg:"#F5F8FF", border:"#485A6430" },
+            { label:"Cuota financiera acumulada · 2° semestre", value: fmtARS(33000000000), icon:"🤝", color:GREEN2, bg:`${GREEN2}0d`, border:`${GREEN2}35` },
+            { label:"Fondo FES esperado",                        value: fmtARS(1130000000),  icon:"🌱", color:GREEN,  bg:`${GREEN}08`, border:`${GREEN}30` },
           ].map((k,i)=>(
             <div key={i} style={{background:k.bg, border:`1px solid ${k.border}`,
                 borderRadius:14, padding:"14px 18px",
@@ -1192,10 +1193,10 @@ function App() {
                 const priorizPendientes= reporteData.filter(r=>r.prioritario && !r.aprobado).length;
                 const pctPrioriz       = priorizados > 0 ? Math.round((priorizAprobados/priorizados)*100) : 0;
                 const kpiCards = [
-                  { label:"Total de programas",     value:total,             icon:"📋", bg:"#F8F9FA",                              border:"#dee2e6",      val:INK,       sub:null },
-                  { label:"Programas priorizados",  value:priorizados,       icon:"⭐", bg:"#F5F8FF",                              border:"#485A6440",    val:SLATE,     sub:priorizados+" de "+total },
-                  { label:"Priorizados aprobados",  value:priorizAprobados,  icon:"✅", bg:"#F0FBF4",                              border:"#27AE6040",    val:"#1a7a46", sub:pctPrioriz+"% de priorizados" },
-                  { label:"Priorizados pendientes", value:priorizPendientes, icon:"🕐", bg:priorizPendientes>0?"#FFFBF0":"#F8F9FA", border:priorizPendientes>0?"#F39C1260":"#dee2e6", val:priorizPendientes>0?"#8B5E00":INK, sub:priorizPendientes>0?"requieren atención":null },
+                  { label:"Total de programas",     value:total,             icon:"🗂️", bg:"#F8F9FA",                              border:"#dee2e6",      val:INK,       sub:null },
+                  { label:"Programas priorizados",  value:priorizados,       icon:"🎯", bg:"#F5F8FF",                              border:"#485A6440",    val:SLATE,     sub:priorizados+" de "+total },
+                  { label:"Priorizados aprobados",  value:priorizAprobados,  icon:"✔️", bg:"#F0FBF4",                              border:"#27AE6040",    val:"#1a7a46", sub:pctPrioriz+"% de priorizados" },
+                  { label:"Priorizados pendientes", value:priorizPendientes, icon:"⏳", bg:priorizPendientes>0?"#FFFBF0":"#F8F9FA", border:priorizPendientes>0?"#F39C1260":"#dee2e6", val:priorizPendientes>0?"#8B5E00":INK, sub:priorizPendientes>0?"requieren atención":null },
                 ];
                 return (
                   <div style={{padding:"16px 22px 16px", borderBottom:`1px solid ${INK}0a`}}>
